@@ -241,6 +241,7 @@ places.forEach(function(p){{
     +(p.opertime&&p.opertime!=='정보없음'?'<div class="iw-row">🕐 '+p.opertime+'</div>':'')
     +(p.tel&&p.tel!=='정보없음'?'<div class="iw-row">📞 '+p.tel+'</div>':'')
     +(p.homepage&&p.homepage!=='정보없음'?'<div class="iw-row"><a href="'+p.homepage+'" target="_blank">🔗 홈페이지</a></div>':'')
+    +'<div class="iw-row"><a href="https://map.kakao.com/link/map/"+encodeURIComponent(p.title)+","+p.mapy+","+p.mapx+'" target="_blank">🗺️ 카카오맵에서 보기</a></div>'
     +'</div>';
   kakao.maps.event.addListener(m,'click',(function(mk,c){{return function(){{iw.setContent(c);iw.open(map,mk);}};}})(m,html));
   markers.push(m);
