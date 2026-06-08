@@ -3,6 +3,7 @@ import streamlit.components.v1 as components
 import pandas as pd
 import json
 import os
+import re
 import urllib.parse
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -11,9 +12,16 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).parent
 load_dotenv(BASE_DIR.parent / ".env", override=True)
-KAKAO_JS_KEY    = os.environ.get("KAKAO_JS_KEY", "")
-KMA_API_KEY     = os.environ.get("KMA_API_KEY", "")
-ENNOEIA_KEY     = os.environ.get("ENNOEIA_API_KEY", "")
+
+def _get_secret(key: str, default: str = "") -> str:
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.environ.get(key, default)
+
+KAKAO_JS_KEY    = _get_secret("KAKAO_JS_KEY")
+KMA_API_KEY     = _get_secret("KMA_API_KEY")
+ENNOEIA_KEY     = _get_secret("ENNOEIA_API_KEY")
 ENNOEIA_PROJECT = "KNTO-PROMPTON-2026-121"
 ENNOEIA_HASH    = "da9313cd70180ac3cfc1b38f54973cc0d40628fee3a572e2eb6d9cf5a3e6a6dc"
 
@@ -70,7 +78,7 @@ SIZE_ICONS = {
     "중형견 (25kg 미만)": "🐕 중형",
     "대형견":            "🦮 대형",
 }
-COURSE_ORDER = ["관광지", "음식점", "문화시설", "레포츠", "숙박", "쇼핑", "기타"]
+COURSE_ORDER = ["관광지", "애견카페", "카페", "음식점", "문화시설", "레포츠", "숙박", "쇼핑", "기타"]
 CARD_STYLES  = [
     {"bg": "#FFF0F5", "border": "#FFB7C5", "num": "①"},
     {"bg": "#F0FFF8", "border": "#A8D5BA", "num": "②"},
@@ -79,7 +87,8 @@ CARD_STYLES  = [
 ]
 CAT_COLORS = {
     "관광지": "#3B82F6", "문화시설": "#8B5CF6", "음식점": "#F97316",
-    "숙박": "#10B981", "레포츠": "#EF4444", "쇼핑": "#EC4899", "기타": "#6B7280",
+    "숙박": "#10B981", "레포츠": "#EF4444", "쇼핑": "#EC4899",
+    "애견카페": "#E879A0", "카페": "#F59E0B", "기타": "#6B7280",
 }
 SIZE_COLORS = {
     "전견종": "#059669", "소형견": "#0284C7", "소형/중형견": "#7C3AED",
@@ -120,14 +129,22 @@ def get_weather(nx: int, ny: int) -> dict | None:
             timeout=10,
         )
         resp.raise_for_status()
-        items = resp.json()["response"]["body"]["items"]["item"]
-    except Exception:
+        body = resp.json().get("response", {})
+        result_code = body.get("header", {}).get("resultCode", "00")
+        if result_code != "00":
+            result_msg = body.get("header", {}).get("resultMsg", "알 수 없는 오류")
+            st.session_state["_wx_error"] = f"기상청 API 오류 [{result_code}]: {result_msg}"
+            return None
+        items = body["body"]["items"]["item"]
+    except Exception as e:
+        st.session_state["_wx_error"] = str(e)
         return None
     result = {}
     for item in items:
         cat, val = item["category"], item["fcstValue"]
         if cat not in result:
             result[cat] = val
+    st.session_state.pop("_wx_error", None)
     return result
 
 def get_walk_suitability(weather: dict) -> tuple[str, str]:
@@ -152,6 +169,23 @@ def load_data() -> pd.DataFrame:
     str_cols = df.select_dtypes("object").columns
     df[str_cols] = df[str_cols].fillna("정보없음")
     df["tel"] = df["tel"].replace("nan", "정보없음")
+    # 카페 서브 분류: 제목 기반으로 애견카페 / 카페 재분류
+    _dog_cafe_pat = re.compile(
+        r'애견.*카페|카페.*애견|도그.*카페|카페.*도그|펫.*카페|카페.*펫'
+        r'|강아지.*카페|카페.*강아지|퍼피.*카페|반려.*카페',
+        re.IGNORECASE,
+    )
+    _cafe_pat = re.compile(r'카페|cafe', re.IGNORECASE)
+    def _reclassify_cafe(row):
+        t = str(row["title"])
+        if _dog_cafe_pat.search(t):
+            return "애견카페"
+        if _cafe_pat.search(t):
+            return "카페"
+        return row["content_type_name"]
+    cafe_rows = df["title"].str.contains(r'카페|cafe', case=False, na=False, regex=True)
+    df.loc[cafe_rows, "content_type_name"] = df[cafe_rows].apply(_reclassify_cafe, axis=1)
+
     if "province" not in df.columns:
         prov_map = {
             "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구",
@@ -289,21 +323,25 @@ def recommend_course(df: pd.DataFrame) -> list[dict]:
         pool  = same_prov if len(same_prov) > 0 else cat_df
         place = pool.sample(1).iloc[0]
         result.append({
-            "cat":   cat,
-            "title": place["title"],
-            "addr":  place["addr1"],
-            "prov":  place["province"],
-            "size":  place["dog_size_category"],
-            "info":  place["acmpyTypeCd"],
-            "mapx":  float(place["mapx"]) if pd.notna(place["mapx"]) else None,
-            "mapy":  float(place["mapy"]) if pd.notna(place["mapy"]) else None,
+            "cat":      cat,
+            "title":    place["title"],
+            "addr":     place["addr1"],
+            "prov":     place["province"],
+            "size":     place["dog_size_category"],
+            "info":     place["acmpyTypeCd"],
+            "mapx":     float(place["mapx"]) if pd.notna(place["mapx"]) else None,
+            "mapy":     float(place["mapy"]) if pd.notna(place["mapy"]) else None,
+            "homepage": str(place.get("homepage", "정보없음")),
+            "time":     "",
+            "reason":   "",
         })
         if len(result) >= 4:
             break
     return result
 
 # ── AI 코스 추천 ───────────────────────────────────────────────────
-def ai_recommend_course(dog_name: str, dog_size: str, places: list[dict]) -> str:
+def ai_recommend_course(dog_name: str, dog_size: str, places: list[dict],
+                        weather_ctx: str = "") -> list[dict]:
     sample = places[:20]
     places_text = "\n".join(
         f"- {p['title']} | 유형: {p['content_type_name']} | 자치구: {p['gu_name']}"
@@ -312,15 +350,23 @@ def ai_recommend_course(dog_name: str, dog_size: str, places: list[dict]) -> str
         f" | 입장가능견종: {p['dog_size_category']}"
         for p in sample
     )
+    n_courses = min(4, len(sample))
+    time_labels = ["오전", "점심", "오후1", "오후2"][:n_courses]
+    example_items = "\n".join(
+        f'  {{"title": "목록에 있는 장소명 그대로", "time": "{t}", "reason": "선정 이유 1~2줄"}}{"," if i < n_courses - 1 else ""}'
+        for i, t in enumerate(time_labels)
+    )
+    weather_line = f"\n날씨 정보: {weather_ctx}" if weather_ctx else ""
     prompt = (
-        f"아래 장소 목록은 한국관광공사 TourAPI와 공식 문화시설 데이터에서 검증된 반려동물 동반 가능 장소입니다.\n"
-        f"코스 추천 시 반드시 이 목록에 있는 장소를 우선 활용해주세요.\n\n"
-        f"강아지 정보: {dog_name} ({dog_size})\n\n"
-        f"[검증된 반려동물 동반 가능 장소 목록]\n{places_text}\n\n"
-        f"위 목록을 참고해 오전·점심·오후 3~4곳의 하루 코스를 짜주세요.\n"
-        f"각 장소마다 ① 장소명 ② 주소 ③ 동반 조건 ④ 선정 이유(1줄)를 포함하고,\n"
-        f"이동 순서와 동선이 자연스럽도록 구성해 한국어로 답변해주세요.\n"
-        f"URL, 지도 링크, 웹사이트 주소는 절대 포함하지 마세요."
+        f"강아지 이름: {dog_name} | 크기: {dog_size}{weather_line}\n\n"
+        f"[반려동물 동반 가능 장소 목록]\n{places_text}\n\n"
+        f"[규칙]\n"
+        f"- 위 목록에서 서로 다른 {n_courses}곳을 골라 오전→점심→오후 순서로 자연스러운 코스를 구성하세요.\n"
+        f"- 유형(content_type_name)이 같거나 유사한 장소(예: 박물관+미술관, 카페+카페)는 2곳 이상 선택하지 마세요.\n"
+        f"- reason에 {dog_name}의 이름을 부르며 친근한 말투로, 1~2줄 이내로 작성하세요.\n"
+        f"- 좌표·URL·링크는 절대 생성하지 마세요.\n\n"
+        f"반드시 아래 JSON 배열 형식으로만 응답하세요 (JSON 외 텍스트 없음, 항목 수 정확히 {n_courses}개):\n"
+        f'[\n{example_items}\n]'
     )
     resp = requests.post(
         "https://api.ennoia.so/api/preset/v2/chat/completions",
@@ -332,12 +378,52 @@ def ai_recommend_course(dog_name: str, dog_size: str, places: list[dict]) -> str
     )
     resp.raise_for_status()
     result = resp.json()
+    content = ""
     if "choices" in result:
-        content = result["choices"][0]["message"]["content"]
-        if isinstance(content, list):
-            return content[0].get("text", str(content))
-        return str(content)
-    return str(result)
+        raw = result["choices"][0]["message"]["content"]
+        content = raw[0].get("text", str(raw)) if isinstance(raw, list) else str(raw)
+    else:
+        content = str(result)
+    content = content.strip()
+    if content.startswith("```"):
+        start = content.index("[")
+        end   = content.rindex("]") + 1
+        content = content[start:end]
+    return json.loads(content)
+
+
+def enrich_ai_course(ai_items: list[dict], df: pd.DataFrame) -> list[dict]:
+    result = []
+    for item in ai_items:
+        title = item.get("title", "")
+        match = df[df["title"] == title]
+        if match.empty:
+            match = df[df["title"].str.contains(title[:min(6, len(title))], na=False, regex=False)]
+        if not match.empty:
+            row = match.iloc[0]
+            mapx = row["mapx"] if "mapx" in row.index else None
+            mapy = row["mapy"] if "mapy" in row.index else None
+            result.append({
+                "cat":      row.get("content_type_name", "기타"),
+                "title":    row["title"],
+                "addr":     row.get("addr1", "정보없음"),
+                "prov":     row.get("province", ""),
+                "size":     row.get("dog_size_category", "정보없음"),
+                "info":     row.get("acmpyTypeCd", "정보없음"),
+                "mapx":     float(mapx) if mapx is not None and pd.notna(mapx) else None,
+                "mapy":     float(mapy) if mapy is not None and pd.notna(mapy) else None,
+                "homepage": str(row.get("homepage", "정보없음")),
+                "time":     item.get("time", ""),
+                "reason":   item.get("reason", ""),
+            })
+        else:
+            result.append({
+                "cat": "기타", "title": title, "addr": "정보없음", "prov": "",
+                "size": "정보없음", "info": "정보없음",
+                "mapx": None, "mapy": None, "homepage": "정보없음",
+                "time": item.get("time", ""), "reason": item.get("reason", ""),
+            })
+    return result
 
 # ── 세션 상태 초기화 ───────────────────────────────────────────────
 for _k, _v in [("course_cards", []), ("course_ai_text", ""),
@@ -424,7 +510,10 @@ with st.sidebar:
               </div>
             </div>""", unsafe_allow_html=True)
         else:
-            st.caption("날씨 정보를 불러올 수 없습니다.")
+            _wx_err = st.session_state.get("_wx_error", "")
+            st.caption(f"날씨 정보를 불러올 수 없습니다.")
+            if _wx_err:
+                st.caption(f"⚠️ {_wx_err}")
     else:
         st.caption("⚠️ .env에 KMA_API_KEY를 추가해주세요.")
 
@@ -448,16 +537,36 @@ if do_course:
     if len(df) == 0:
         st.sidebar.warning("조건에 맞는 장소가 없습니다.")
     elif use_ai:
-        with st.spinner(f"🤖 AI가 {display_name}를 위한 코스를 추천 중..."):
+        with st.spinner(f"🤖 댕댕맵이 {display_name}를 위한 코스를 추천 중... 잠시만 기다려 주세요!"):
             ai_cols = [c for c in ["title","content_type_name","province","gu_name",
                                    "addr1","acmpyTypeCd","dog_size_category"] if c in df.columns]
+            # 날씨 컨텍스트 생성
+            _weather_ctx = ""
+            if KMA_API_KEY and sel_provs:
+                _wx = get_weather(*REGION_GRID.get(sel_provs[0], (60, 127)))
+                if _wx:
+                    _pty = _wx.get("PTY", "0")
+                    _sky = _wx.get("SKY", "1")
+                    _tmp = _wx.get("T1H", "--")
+                    _desc = PTY_LABEL.get(_pty, "") if _pty != "0" else SKY_LABEL.get(_sky, "맑음")
+                    _weather_ctx = f"{_tmp}°C, {_desc}"
+                    if _pty != "0":
+                        _weather_ctx += " → 실내 위주 코스 권장"
+                    elif float(_tmp) >= 28:
+                        _weather_ctx += " → 그늘·실내 장소 우선 권장"
             try:
-                ai_text = ai_recommend_course(display_name, dog_size, df[ai_cols].to_dict("records"))
+                ai_items = ai_recommend_course(display_name, dog_size,
+                                               df[ai_cols].to_dict("records"), _weather_ctx)
+                course   = enrich_ai_course(ai_items, df)
             except Exception as e:
-                ai_text = f"AI 추천 중 오류가 발생했습니다: {e}"
-        st.session_state.course_ai_text    = ai_text
-        st.session_state.course_cards      = []
-        st.session_state.course_map_places = []
+                course = []
+                st.sidebar.error(f"AI 추천 오류: {e}")
+        st.session_state.course_cards      = course
+        st.session_state.course_map_places = [
+            {"title": p["title"], "mapx": p["mapx"], "mapy": p["mapy"]}
+            for p in course if p.get("mapx") and p.get("mapy")
+        ]
+        st.session_state.course_ai_text    = ""
         st.session_state.course_name       = display_name
         st.session_state.course_is_ai      = True
     else:
@@ -526,30 +635,43 @@ else:
 
 # ── 코스 추천 결과 ─────────────────────────────────────────────────
 if st.session_state.course_cards:
+    ai_label = "🤖 AI " if st.session_state.course_is_ai else ""
+    _num_labels = ["①", "②", "③", "④"]
+    _marker_str = "".join(_num_labels[:len(st.session_state.course_cards)])
     st.markdown(f"""
     <div style="margin:20px 0 10px 0">
       <span style="font-size:1.1rem;font-weight:800;color:#8B5CF6">
-        🗺️ {st.session_state.course_name}를 위한 추천 코스
+        🗺️ 오늘의 추천 코스
       </span>
       <span style="font-size:0.8rem;color:#AAA;margin-left:10px">
-        지도의 ①②③④ 마커를 확인하세요
+        지도의 {_marker_str} 마커를 확인하세요
       </span>
     </div>""", unsafe_allow_html=True)
 
     cols = st.columns(len(st.session_state.course_cards))
     for i, (p, col) in enumerate(zip(st.session_state.course_cards, cols)):
         cs = CARD_STYLES[i % len(CARD_STYLES)]
-        addr_short = p["addr"][:35] + ("…" if len(p["addr"]) > 35 else "")
-        info_line  = (f'<div style="font-size:0.72rem;color:#999;margin-top:6px;line-height:1.4">'
-                      f'{p["info"][:45]}</div>') if p["info"] != "정보없음" else ""
-        map_link = (
+        addr_short   = p["addr"][:35] + ("…" if len(p["addr"]) > 35 else "")
+        reason_text  = p.get("reason") or (p["info"] if p["info"] != "정보없음" else "")
+        info_line    = (f'<div style="font-size:0.72rem;color:#666;margin-top:6px;line-height:1.5">'
+                        f'{reason_text[:60]}</div>') if reason_text else ""
+        time_badge   = (f'<span style="background:#E8D5F5;color:#7B4F8A;padding:2px 8px;'
+                        f'border-radius:10px;font-size:0.7rem;margin-left:4px">{p["time"]}</span>') \
+                       if p.get("time") else ""
+        map_link     = (
             f'https://map.kakao.com/link/map/{urllib.parse.quote(p["title"])},{p["mapy"]},{p["mapx"]}'
             if p.get("mapx") and p.get("mapy") else ""
         )
-        map_btn = (f'<div style="margin-top:8px"><a href="{map_link}" target="_blank" '
-                   f'style="font-size:0.7rem;color:#8B5CF6;text-decoration:none;'
-                   f'border:1px solid #C4B5FD;border-radius:8px;padding:2px 8px;white-space:nowrap">'
-                   f'🗺️ 카카오맵에서 보기</a></div>') if map_link else ""
+        _ls = 'font-size:0.7rem;text-decoration:none;border-radius:8px;padding:2px 8px;white-space:nowrap;'
+        map_btn  = (f'<a href="{map_link}" target="_blank" '
+                    f'style="{_ls}color:#8B5CF6;border:1px solid #C4B5FD">🗺️ 카카오맵</a>') \
+                   if map_link else ""
+        homepage = p.get("homepage", "정보없음")
+        home_btn = (f'<a href="{homepage}" target="_blank" '
+                    f'style="{_ls}color:#059669;border:1px solid #A7F3D0">🔗 홈페이지</a>') \
+                   if homepage and homepage not in ("정보없음", "nan") else ""
+        links_row = (f'<div style="margin-top:8px;display:flex;gap:6px;flex-wrap:wrap">'
+                     f'{map_btn}{home_btn}</div>') if (map_btn or home_btn) else ""
         with col:
             st.markdown(f"""
             <div style="background:{cs['bg']};border:2px solid {cs['border']};
@@ -565,19 +687,15 @@ if st.session_state.course_cards:
                            border-radius:10px;font-size:0.7rem;font-weight:700">{p['cat']}</span>
               <span style="background:#EEE;color:#666;padding:2px 8px;
                            border-radius:10px;font-size:0.7rem;margin-left:4px">{p['size']}</span>
+              {time_badge}
               {info_line}
-              {map_btn}
+              {links_row}
             </div>""", unsafe_allow_html=True)
 
-elif st.session_state.course_ai_text:
-    st.markdown(f"""
-    <div style="margin:20px 0 10px 0;font-size:1.1rem;font-weight:800;color:#8B5CF6">
-      🤖 AI 추천 코스 — {st.session_state.course_name}
-    </div>""", unsafe_allow_html=True)
     st.markdown(
-        f'<div style="background:white;border:2px solid #E8D5F5;border-radius:18px;'
-        f'padding:20px;line-height:1.8;color:#444">'
-        f'{st.session_state.course_ai_text}</div>',
+        '<div style="margin-top:10px;font-size:0.78rem;color:#999;text-align:center">'
+        '⚠️ 폐업한 장소가 존재할 수 있으니, 방문 전 반드시 링크를 통해 영업 여부를 확인해 주세요.'
+        '</div>',
         unsafe_allow_html=True,
     )
 
