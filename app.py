@@ -733,8 +733,9 @@ with st.sidebar:
     sel_gus   = st.multiselect("자치구",   all_gus,   key="sel_gus")
 
     if st.button("🔄 필터 초기화", use_container_width=True, type="secondary"):
-        for _k in ("sel_cats", "sel_provs", "sel_gus"):
-            st.session_state.pop(_k, None)
+        st.session_state["sel_cats"] = []
+        st.session_state["sel_provs"] = []
+        st.session_state["sel_gus"] = []
         st.session_state.course_cards      = []
         st.session_state.course_ai_text    = ""
         st.session_state.course_map_places = []
