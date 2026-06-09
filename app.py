@@ -11,7 +11,7 @@ import requests
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).parent
-load_dotenv(BASE_DIR.parent / ".env", override=True)
+load_dotenv(BASE_DIR / ".env", override=True)
 
 def _get_secret(key: str, default: str = "") -> str:
     try:
@@ -206,18 +206,60 @@ def load_data() -> pd.DataFrame:
     return df
 
 # ── 카카오맵 HTML (클러스터링 + 범례 + 코스 마커 + 운영시간/홈페이지) ──
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_kakao_sdk_script(key: str) -> str:
+    try:
+        resp = requests.get(
+            "https://dapi.kakao.com/v2/maps/sdk.js",
+            params={"appkey": key, "autoload": "false"},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        return resp.text.replace("</script", "<\\/script")
+    except Exception:
+        return ""
+
 def build_map_html(places: list[dict], key: str, course_places: list[dict] = None) -> str:
     places_js = json.dumps(places,          ensure_ascii=False)
     course_js = json.dumps(course_places or [], ensure_ascii=False)
     cat_js    = json.dumps(CAT_COLORS,      ensure_ascii=False)
     size_js   = json.dumps(SIZE_COLORS,     ensure_ascii=False)
-
-    legend_html = "".join(
-        f'<span style="display:inline-flex;align-items:center;margin:2px 8px 2px 0;font-size:11px">'
-        f'<span style="width:10px;height:10px;border-radius:50%;background:{c};'
-        f'display:inline-block;margin-right:4px;flex-shrink:0"></span>{n}</span>'
-        for n, c in CAT_COLORS.items()
+    sdk_script = load_kakao_sdk_script(key)
+    sdk_loader = (
+        f'<script>{sdk_script}</script><script>initKakaoMap();</script>'
+        if sdk_script
+        else (
+            '<script src="https://dapi.kakao.com/v2/maps/sdk.js?'
+            f'appkey={urllib.parse.quote(key)}&autoload=false" '
+            'onload="initKakaoMap()" onerror="handleKakaoMapLoadError()"></script>'
+        )
     )
+
+    if course_places:
+        legend_html = (
+            '<span style="display:inline-flex;align-items:center;margin:2px 10px 2px 0;font-size:11px;color:#7B4F8A;font-weight:700">'
+            '<span style="width:16px;height:16px;border-radius:50%;background:linear-gradient(135deg,#FFB7C5,#C7CEEA);'
+            'display:inline-block;margin-right:5px;flex-shrink:0;border:2px solid rgba(255,255,255,0.95);'
+            'box-shadow:0 2px 8px rgba(192,132,212,0.22)"></span>추천 장소</span>'
+            '<span style="display:inline-flex;align-items:center;margin:2px 10px 2px 0;font-size:11px;color:#4C6FAE;font-weight:700">'
+            '<span style="width:10px;height:14px;border-radius:8px 8px 8px 2px;background:#4C86E8;'
+            'display:inline-block;margin-right:5px;flex-shrink:0;border:2px solid white;'
+            'box-shadow:0 2px 7px rgba(76,134,232,0.28);transform:rotate(-45deg)"></span>전체 장소</span>'
+        )
+    else:
+        legend_items = [
+            ("시도별 그룹 마커", "linear-gradient(135deg,#FFD6E7,#E9D5FF)", "12px"),
+            ("500곳 미만", "#FFD6E7", "10px"),
+            ("500-1,500곳", "#E9D5FF", "12px"),
+            ("1,500곳 이상", "#C084D4", "14px"),
+        ]
+        legend_html = "".join(
+            f'<span style="display:inline-flex;align-items:center;margin:2px 10px 2px 0;font-size:11px;color:#7B4F8A;font-weight:700">'
+            f'<span style="width:{size};height:{size};border-radius:50%;background:{bg};'
+            f'display:inline-block;margin-right:5px;flex-shrink:0;border:2px solid rgba(255,255,255,0.95);'
+            f'box-shadow:0 2px 8px rgba(192,132,212,0.22)"></span>{label}</span>'
+            for label, bg, size in legend_items
+        )
 
     return f"""<!DOCTYPE html><html><head>
 <meta charset="utf-8">
@@ -237,75 +279,255 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
   .tag{{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;margin-right:3px;margin-bottom:3px;color:#fff}}
   .iw-row{{font-size:11px;color:#666;margin-top:4px;line-height:1.5}}
   .iw-row a{{color:#8B5CF6;text-decoration:none}}
+  .cp-wrap{{
+    position:relative;display:flex;flex-direction:column;align-items:center;
+    transform:translateY(-10px);cursor:pointer;user-select:none
+  }}
   .cp{{
-    width:34px;height:34px;border-radius:50%;
-    background:linear-gradient(135deg,#FF8FAB,#C084D4);
-    color:white;font-weight:800;font-size:15px;
+    width:46px;height:46px;border-radius:50%;
+    background:radial-gradient(circle at 35% 28%,var(--cp-light),var(--cp-main) 52%,var(--cp-deep) 92%);
+    color:var(--cp-text);font-weight:900;font-size:22px;
     display:flex;align-items:center;justify-content:center;
-    border:3px solid white;box-shadow:0 3px 10px rgba(0,0,0,0.35);
-    cursor:pointer;user-select:none
+    border:3px solid rgba(255,255,255,0.96);
+    box-shadow:0 10px 24px rgba(180,100,140,0.22),0 0 0 7px rgba(255,255,255,0.55)
+  }}
+  .cp-label{{
+    margin-top:5px;max-width:116px;padding:4px 8px;border-radius:999px;
+    background:rgba(255,255,255,0.94);color:var(--cp-text);
+    font-size:11px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+    box-shadow:0 3px 10px rgba(180,100,140,0.16);
+    border:1px solid var(--cp-deep)
+  }}
+  .prov-wrap{{
+    position:relative;display:flex;flex-direction:column;align-items:center;
+    transform:translateY(-8px);cursor:pointer;user-select:none
+  }}
+  .prov-bubble{{
+    min-width:44px;height:44px;padding:0 10px;border-radius:999px;
+    background:linear-gradient(135deg,#FFD6E7 0%,#E9D5FF 100%);
+    color:#7B4F8A;font-size:15px;font-weight:900;
+    display:flex;align-items:center;justify-content:center;
+    border:3px solid rgba(255,255,255,0.96);
+    box-shadow:0 8px 22px rgba(192,132,212,0.28),0 2px 8px rgba(255,143,171,0.2)
+  }}
+  .prov-label{{
+    margin-top:5px;padding:3px 8px;border-radius:999px;
+    background:rgba(255,255,255,0.92);color:#8B5CF6;
+    font-size:11px;font-weight:800;white-space:nowrap;
+    box-shadow:0 2px 8px rgba(180,100,140,0.16)
+  }}
+  .list-group{{
+    min-width:24px;height:24px;padding:0 6px;border-radius:999px;
+    background:#4C86E8;color:white;font-size:11px;font-weight:900;
+    display:flex;align-items:center;justify-content:center;
+    border:2px solid white;box-shadow:0 4px 12px rgba(76,134,232,0.28)
+  }}
+  .list-group-label{{
+    margin-top:3px;padding:2px 6px;border-radius:999px;
+    background:rgba(255,255,255,0.9);color:#4C6FAE;
+    font-size:10px;font-weight:800;white-space:nowrap;
+    box-shadow:0 2px 8px rgba(76,134,232,0.15)
   }}
   .mw{{position:relative;width:100%;height:520px}}
+  .map-error{{
+    position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    text-align:center;color:#7B4F8A;background:#FFF7FB;border:2px dashed #FFD6E7;
+    border-radius:16px;font-size:14px;font-weight:700;line-height:1.6;padding:24px
+  }}
 </style>
 </head><body>
 <div class="mw">
   <div id="map"></div>
+  <div id="map-error" class="map-error"></div>
   <div class="legend">{legend_html}</div>
 </div>
-<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={key}&libraries=clusterer"></script>
 <script>
-var map=new kakao.maps.Map(document.getElementById('map'),{{center:new kakao.maps.LatLng(35.9,127.8),level:13}});
-var iw=new kakao.maps.InfoWindow({{zIndex:1}});
-var C={cat_js};
-var S={size_js};
-var places={places_js};
-var markers=[];
-places.forEach(function(p){{
-  if(!p.mapy||!p.mapx)return;
-  var m=new kakao.maps.Marker({{position:new kakao.maps.LatLng(p.mapy,p.mapx),title:p.title}});
-  var cc=C[p.content_type_name]||'#6B7280';
-  var sc=S[p.dog_size_category]||'#9CA3AF';
-  var html='<div class="iw">'
-    +'<div class="iw-title">'+p.title+'</div>'
-    +'<div class="iw-addr">'+(p.addr1||'')+'</div>'
-    +'<div>'
-    +'<span class="tag" style="background:'+cc+'">'+p.content_type_name+'</span>'
-    +'<span class="tag" style="background:'+sc+'">'+p.dog_size_category+'</span>'
-    +'</div>'
-    +(p.acmpyTypeCd&&p.acmpyTypeCd!=='정보없음'?'<div class="iw-row">🐾 '+p.acmpyTypeCd+'</div>':'')
-    +(p.opertime&&p.opertime!=='정보없음'?'<div class="iw-row">🕐 '+p.opertime+'</div>':'')
-    +(p.tel&&p.tel!=='정보없음'?'<div class="iw-row">📞 '+p.tel+'</div>':'')
-    +(p.homepage&&p.homepage!=='정보없음'?'<div class="iw-row"><a href="'+p.homepage+'" target="_blank">🔗 홈페이지</a></div>':'')
-    +'<div class="iw-row"><a href="https://map.kakao.com/link/map/'+encodeURIComponent(p.title)+','+p.mapy+','+p.mapx+'" target="_blank">🗺️ 카카오맵에서 보기</a></div>'
-    +'</div>';
-  kakao.maps.event.addListener(m,'click',(function(mk,c){{return function(){{iw.setContent(c);iw.open(map,mk);}};}})(m,html));
-  markers.push(m);
-}});
-new kakao.maps.MarkerClusterer({{
-  map:map,markers:markers,averageCenter:true,minLevel:5,
-  styles:[
-    {{width:'38px',height:'38px',background:'rgba(255,143,171,0.9)',borderRadius:'19px',color:'#fff',textAlign:'center',fontWeight:'700',lineHeight:'38px',fontSize:'13px',border:'2px solid #FF8FAB'}},
-    {{width:'46px',height:'46px',background:'rgba(192,132,212,0.9)',borderRadius:'23px',color:'#fff',textAlign:'center',fontWeight:'700',lineHeight:'46px',fontSize:'14px',border:'2px solid #C084D4'}},
-    {{width:'54px',height:'54px',background:'rgba(123,79,138,0.9)',borderRadius:'27px',color:'#fff',textAlign:'center',fontWeight:'700',lineHeight:'54px',fontSize:'15px',border:'2px solid #7B4F8A'}}
-  ]
-}});
-var cp={course_js};
-var nums=['①','②','③','④'];
-if(cp.length>0){{
-  cp.forEach(function(p,i){{
+(function(){{
+  function showMapError(message){{
+    var err=document.getElementById('map-error');
+    if(err){{
+      err.style.display='flex';
+      err.innerHTML=message;
+    }}
+  }}
+
+  window.handleKakaoMapLoadError=function(){{
+    showMapError('카카오 지도 SDK를 불러오지 못했습니다.<br>JavaScript 키와 도메인 등록을 확인해 주세요.');
+  }};
+
+  window.initKakaoMap=function(){{
+    try{{
+      if(!window.kakao||!kakao.maps){{
+        throw new Error('Kakao Maps SDK is not available.');
+      }}
+
+      kakao.maps.load(function(){{
+        var map=new kakao.maps.Map(document.getElementById('map'),{{center:new kakao.maps.LatLng(35.9,127.8),level:13}});
+        var iw=new kakao.maps.InfoWindow({{zIndex:1}});
+        var C={cat_js};
+        var S={size_js};
+        var places={places_js};
+        var markers=[];
+        var markerItems=[];
+        var smallBlueMarkerSvg='<svg xmlns="http://www.w3.org/2000/svg" width="18" height="24" viewBox="0 0 18 24"><path d="M9 23s7-7.1 7-14A7 7 0 1 0 2 9c0 6.9 7 14 7 14z" fill="#4C86E8" stroke="white" stroke-width="2"/><circle cx="9" cy="9" r="3" fill="white" opacity=".95"/></svg>';
+        var smallBlueMarkerImage=new kakao.maps.MarkerImage(
+          'data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(smallBlueMarkerSvg),
+          new kakao.maps.Size(18,24),
+          {{offset:new kakao.maps.Point(9,24)}}
+        );
+        places.forEach(function(p){{
+          if(!p.mapy||!p.mapx)return;
+          var pos=new kakao.maps.LatLng(p.mapy,p.mapx);
+          var m=new kakao.maps.Marker({{position:pos,title:p.title}});
+          m.setImage(smallBlueMarkerImage);
+          var cc=C[p.content_type_name]||'#6B7280';
+          var sc=S[p.dog_size_category]||'#9CA3AF';
+          var html='<div class="iw">'
+            +'<div class="iw-title">'+p.title+'</div>'
+            +'<div class="iw-addr">'+(p.addr1||'')+'</div>'
+            +'<div>'
+            +'<span class="tag" style="background:'+cc+'">'+p.content_type_name+'</span>'
+            +'<span class="tag" style="background:'+sc+'">'+p.dog_size_category+'</span>'
+            +'</div>'
+            +(p.acmpyTypeCd&&p.acmpyTypeCd!=='정보없음'?'<div class="iw-row">🐾 '+p.acmpyTypeCd+'</div>':'')
+            +(p.opertime&&p.opertime!=='정보없음'?'<div class="iw-row">🕐 '+p.opertime+'</div>':'')
+            +(p.tel&&p.tel!=='정보없음'?'<div class="iw-row">📞 '+p.tel+'</div>':'')
+            +(p.homepage&&p.homepage!=='정보없음'?'<div class="iw-row"><a href="'+p.homepage+'" target="_blank">🔗 홈페이지</a></div>':'')
+            +'<div class="iw-row"><a href="https://map.kakao.com/link/map/'+encodeURIComponent(p.title)+','+p.mapy+','+p.mapx+'" target="_blank">🗺️ 카카오맵에서 보기</a></div>'
+            +'</div>';
+          kakao.maps.event.addListener(m,'click',(function(mk,c){{return function(){{iw.setContent(c);iw.open(map,mk);}};}})(m,html));
+          markers.push(m);
+          markerItems.push({{marker:m,province:p.province||'정보없음',gu:p.gu_name||'정보없음',position:pos}});
+        }});
+        var listOverlays=[];
+        function clearListOverlays(){{
+          listOverlays.forEach(function(o){{o.setMap(null);}});
+          listOverlays=[];
+        }}
+        function showListMarkers(selectedProvince, fitToBounds){{
+          var bounds=new kakao.maps.LatLngBounds();
+          var shown=0;
+          var selected=[];
+          clearListOverlays();
+          markerItems.forEach(function(item){{item.marker.setMap(null);}});
+          markerItems.forEach(function(item){{
+            var visible=!selectedProvince||item.province===selectedProvince;
+            if(visible){{
+              selected.push(item);
+              bounds.extend(item.position);
+              shown++;
+            }}
+          }});
+          if(selected.length<=180){{
+            selected.forEach(function(item){{item.marker.setMap(map);}});
+          }}else{{
+            var groups={{}};
+            selected.forEach(function(item){{
+              var name=item.gu&&item.gu!=='정보없음'?item.gu:item.province;
+              if(!groups[name]){{groups[name]={{count:0,lat:0,lng:0}};}}
+              groups[name].count++;
+              groups[name].lat+=item.position.getLat();
+              groups[name].lng+=item.position.getLng();
+            }});
+            Object.keys(groups).forEach(function(name){{
+              var g=groups[name];
+              var pos=new kakao.maps.LatLng(g.lat/g.count,g.lng/g.count);
+              var el=document.createElement('div');
+              el.className='prov-wrap';
+              el.innerHTML='<div class="list-group">'+formatCount(g.count)+'</div><div class="list-group-label">'+name+'</div>';
+              var overlay=new kakao.maps.CustomOverlay({{position:pos,content:el,yAnchor:0.85,zIndex:6}});
+              listOverlays.push(overlay);
+              overlay.setMap(map);
+            }});
+          }}
+          if(fitToBounds&&shown>0){{map.setBounds(bounds,60);}}
+        }}
+        var provinceOverlays=[];
+        function hideProvinceOverlays(){{
+          provinceOverlays.forEach(function(o){{o.setMap(null);}});
+        }}
+        function formatCount(count){{
+          if(count>=1000){{
+            var value=(count/1000).toFixed(1);
+            return value.replace(/\\.0$/,'')+'k';
+          }}
+          return String(count);
+        }}
+        var cp={course_js};
+        var nums=['①','②','③','④','⑤','⑥','⑦','⑧'];
+        var cpPalette=[
+          {{light:'#FFF0F5',main:'#FFB7C5',deep:'#E879A0',text:'#8A4E67'}},
+          {{light:'#F0FFF8',main:'#A8D5BA',deep:'#6FB28A',text:'#4F7D61'}},
+          {{light:'#F5F0FF',main:'#C7CEEA',deep:'#9B8BD3',text:'#66548E'}},
+          {{light:'#FFF8F0',main:'#FFDAC1',deep:'#E9B57C',text:'#8A6540'}}
+        ];
+        if(cp.length>0){{
+          showListMarkers(null,false);
+          var courseBounds=new kakao.maps.LatLngBounds();
+          var courseShown=0;
+          cp.forEach(function(p,i){{
     if(!p.mapy||!p.mapx)return;
+    var coursePos=new kakao.maps.LatLng(p.mapy,p.mapx);
+    courseBounds.extend(coursePos);
+    courseShown++;
     var el=document.createElement('div');
-    el.className='cp';el.innerText=nums[i]||(i+1);
-    new kakao.maps.CustomOverlay({{position:new kakao.maps.LatLng(p.mapy,p.mapx),content:el,yAnchor:1.15,zIndex:10}}).setMap(map);
+    el.className='cp-wrap';
+    var color=cpPalette[i%cpPalette.length];
+    el.style.setProperty('--cp-light',color.light);
+    el.style.setProperty('--cp-main',color.main);
+    el.style.setProperty('--cp-deep',color.deep);
+    el.style.setProperty('--cp-text',color.text);
+    var label=(p.title||'추천 장소');
+    el.innerHTML='<div class="cp">'+(nums[i]||(i+1))+'</div><div class="cp-label">'+label+'</div>';
+    new kakao.maps.CustomOverlay({{position:coursePos,content:el,yAnchor:1.15,zIndex:10}}).setMap(map);
   }});
-  map.setCenter(new kakao.maps.LatLng(cp[0].mapy,cp[0].mapx));
-  map.setLevel(10);
-}}else if(markers.length>0){{
-  var bounds=new kakao.maps.LatLngBounds();
-  markers.forEach(function(m){{bounds.extend(m.getPosition());}});
-  map.setBounds(bounds,60);
+  if(courseShown>1){{
+    map.setBounds(courseBounds,80);
+  }}else if(courseShown===1){{
+    map.setCenter(new kakao.maps.LatLng(cp[0].mapy,cp[0].mapx));
+    map.setLevel(8);
+  }}
+}}else if(markerItems.length>0){{
+  var groups={{}};
+  places.forEach(function(p){{
+    var lat=parseFloat(p.mapy), lng=parseFloat(p.mapx);
+    if(!lat||!lng)return;
+    var prov=p.province||'정보없음';
+    if(!groups[prov]){{groups[prov]={{province:prov,count:0,lat:0,lng:0}};}}
+    groups[prov].count++;
+    groups[prov].lat+=lat;
+    groups[prov].lng+=lng;
+  }});
+  var provinceBounds=new kakao.maps.LatLngBounds();
+  Object.keys(groups).forEach(function(name){{
+    var g=groups[name];
+    var pos=new kakao.maps.LatLng(g.lat/g.count,g.lng/g.count);
+    var el=document.createElement('div');
+    el.className='prov-wrap';
+    el.innerHTML='<div class="prov-bubble">'+formatCount(g.count)+'</div><div class="prov-label">'+name+'</div>';
+    el.addEventListener('click',(function(prov){{return function(){{
+      hideProvinceOverlays();
+      iw.close();
+      showListMarkers(prov,true);
+      map.setLevel(Math.min(map.getLevel(),9));
+    }};}})(name));
+    var overlay=new kakao.maps.CustomOverlay({{position:pos,content:el,yAnchor:0.85,zIndex:7}});
+    provinceOverlays.push(overlay);
+    overlay.setMap(map);
+    provinceBounds.extend(pos);
+  }});
+  if(provinceOverlays.length>0){{map.setBounds(provinceBounds,80);}}
 }}
-</script></body></html>"""
+      }});
+    }}catch(e){{
+      showMapError('카카오 지도를 초기화하지 못했습니다.<br>'+String(e.message||e));
+      console.error(e);
+    }}
+  }};
+}})();
+</script>
+{sdk_loader}
+</body></html>"""
 
 # ── 규칙 기반 코스 추천 ────────────────────────────────────────────
 def recommend_course(df: pd.DataFrame) -> list[dict]:
@@ -315,15 +537,11 @@ def recommend_course(df: pd.DataFrame) -> list[dict]:
     top_prov = valid["province"].value_counts().index[0] if len(valid) > 0 \
                else df["province"].value_counts().index[0]
     result   = []
-    for cat in COURSE_ORDER:
-        cat_df = df[df["content_type_name"] == cat]
-        if cat_df.empty:
-            continue
-        same_prov = cat_df[cat_df["province"] == top_prov]
-        pool  = same_prov if len(same_prov) > 0 else cat_df
-        place = pool.sample(1).iloc[0]
-        result.append({
-            "cat":      cat,
+    used_titles = set()
+
+    def _course_item(place, cat=None):
+        return {
+            "cat":      cat or place["content_type_name"],
             "title":    place["title"],
             "addr":     place["addr1"],
             "prov":     place["province"],
@@ -334,9 +552,29 @@ def recommend_course(df: pd.DataFrame) -> list[dict]:
             "homepage": str(place.get("homepage", "정보없음")),
             "time":     "",
             "reason":   "",
-        })
+        }
+
+    for cat in COURSE_ORDER:
+        cat_df = df[df["content_type_name"] == cat]
+        if cat_df.empty:
+            continue
+        cat_df = cat_df[~cat_df["title"].isin(used_titles)]
+        if cat_df.empty:
+            continue
+        same_prov = cat_df[cat_df["province"] == top_prov]
+        pool  = same_prov if len(same_prov) > 0 else cat_df
+        place = pool.sample(1).iloc[0]
+        result.append(_course_item(place, cat))
+        used_titles.add(place["title"])
         if len(result) >= 4:
             break
+    if len(result) < min(4, len(df)):
+        fill_pool = df[~df["title"].isin(used_titles)]
+        same_prov = fill_pool[fill_pool["province"] == top_prov]
+        fill_pool = same_prov if len(same_prov) > 0 else fill_pool
+        for _, place in fill_pool.sample(min(4 - len(result), len(fill_pool))).iterrows():
+            result.append(_course_item(place))
+            used_titles.add(place["title"])
     return result
 
 # ── AI 코스 추천 ───────────────────────────────────────────────────
@@ -424,6 +662,35 @@ def enrich_ai_course(ai_items: list[dict], df: pd.DataFrame) -> list[dict]:
                 "time": item.get("time", ""), "reason": item.get("reason", ""),
             })
     return result
+
+def build_filter_map_picks(df: pd.DataFrame, limit: int = 4) -> list[dict]:
+    if df.empty:
+        return []
+    picks = df.copy()
+    if "content_type_name" in picks.columns:
+        picks["_cat_rank"] = picks["content_type_name"].map(
+            {cat: idx for idx, cat in enumerate(COURSE_ORDER)}
+        ).fillna(len(COURSE_ORDER))
+    else:
+        picks["_cat_rank"] = len(COURSE_ORDER)
+    picks = picks.sort_values(["_cat_rank", "title"], kind="stable").head(limit)
+    return [
+        {
+            "title": row["title"],
+            "cat": row.get("content_type_name", "기타"),
+            "addr": row.get("addr1", "정보없음"),
+            "prov": row.get("province", ""),
+            "size": row.get("dog_size_category", "정보없음"),
+            "info": row.get("acmpyTypeCd", "정보없음"),
+            "mapx": float(row["mapx"]),
+            "mapy": float(row["mapy"]),
+            "homepage": str(row.get("homepage", "정보없음")),
+            "time": "",
+            "reason": "",
+        }
+        for _, row in picks.iterrows()
+        if pd.notna(row.get("mapx")) and pd.notna(row.get("mapy"))
+    ]
 
 # ── 세션 상태 초기화 ───────────────────────────────────────────────
 for _k, _v in [("course_cards", []), ("course_ai_text", ""),
@@ -531,6 +798,7 @@ if sel_provs: df = df[df["province"].isin(sel_provs)]
 if sel_gus:   df = df[df["gu_name"].isin(sel_gus)]
 
 display_name = dog_name.strip() if dog_name.strip() else "반려견"
+filters_active = bool(sel_cats or sel_provs or sel_gus)
 
 # ── 코스 추천 처리 ─────────────────────────────────────────────────
 if do_course:
@@ -619,37 +887,47 @@ if len(df) == 0:
             st.info(f"💡 카테고리 필터를 해제하면 **{len(base)}곳** 검색됩니다.")
 
 # ── 지도 (클러스터링 + 코스 마커 + 범례) ──────────────────────────
+filter_map_picks = []
 if not KAKAO_JS_KEY:
     st.warning("⚠️ .env 파일에 KAKAO_JS_KEY를 추가해주세요.")
 else:
-    map_cols   = [c for c in ["title","addr1","mapx","mapy","content_type_name",
+    map_cols   = [c for c in ["title","addr1","mapx","mapy","province","content_type_name",
                                "gu_name","dog_size_category","acmpyTypeCd",
                                "tel","opertime","homepage"] if c in df.columns]
     places_df  = df[map_cols].copy()
     places_df["tel"] = places_df["tel"].replace("nan", "정보없음").fillna("정보없음")
+    filter_map_picks = build_filter_map_picks(places_df) if filters_active else []
+    map_focus_places = (
+        st.session_state.course_map_places
+        if st.session_state.course_map_places
+        else filter_map_picks
+    )
     components.html(
         build_map_html(places_df.to_dict("records"), KAKAO_JS_KEY,
-                       st.session_state.course_map_places),
+                       map_focus_places),
         height=550,
     )
 
 # ── 코스 추천 결과 ─────────────────────────────────────────────────
-if st.session_state.course_cards:
+recommendation_cards = st.session_state.course_cards or filter_map_picks
+if recommendation_cards:
     ai_label = "🤖 AI " if st.session_state.course_is_ai else ""
-    _num_labels = ["①", "②", "③", "④"]
-    _marker_str = "".join(_num_labels[:len(st.session_state.course_cards)])
+    _num_labels = ["①", "②", "③", "④", "⑤", "⑥", "⑦", "⑧"]
+    _marker_str = "".join(_num_labels[:len(recommendation_cards)])
+    _heading = "🗺️ 오늘의 추천 코스" if st.session_state.course_cards else "💗 추천 장소"
     st.markdown(f"""
     <div style="margin:20px 0 10px 0">
       <span style="font-size:1.1rem;font-weight:800;color:#8B5CF6">
-        🗺️ 오늘의 추천 코스
+        {_heading}
       </span>
       <span style="font-size:0.8rem;color:#AAA;margin-left:10px">
         지도의 {_marker_str} 마커를 확인하세요
       </span>
     </div>""", unsafe_allow_html=True)
 
-    cols = st.columns(len(st.session_state.course_cards))
-    for i, (p, col) in enumerate(zip(st.session_state.course_cards, cols)):
+    cols = st.columns(min(4, len(recommendation_cards)))
+    for i, p in enumerate(recommendation_cards):
+        col = cols[i % len(cols)]
         cs = CARD_STYLES[i % len(CARD_STYLES)]
         addr_short   = p["addr"][:35] + ("…" if len(p["addr"]) > 35 else "")
         reason_text  = p.get("reason") or (p["info"] if p["info"] != "정보없음" else "")
