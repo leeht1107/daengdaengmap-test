@@ -739,6 +739,7 @@ with st.sidebar:
         st.session_state.course_ai_text    = ""
         st.session_state.course_map_places = []
         st.session_state.course_name       = ""
+        st.session_state.course_is_ai      = False
         st.rerun()
 
     st.divider()
