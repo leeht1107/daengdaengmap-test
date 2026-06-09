@@ -226,6 +226,7 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
     course_js = json.dumps(course_places or [], ensure_ascii=False)
     cat_js    = json.dumps(CAT_COLORS,      ensure_ascii=False)
     size_js   = json.dumps(SIZE_COLORS,     ensure_ascii=False)
+    sdk_script = load_kakao_sdk_script(key)
     sdk_url = (
         'https://dapi.kakao.com/v2/maps/sdk.js?'
         f'appkey={urllib.parse.quote(key)}&autoload=false'
@@ -234,15 +235,13 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
         '<script>'
         '  window.handleKakaoMapLoadError = window.handleKakaoMapLoadError || function(){};'
         '</script>'
-        f'<script src="{sdk_url}" ></script>'
-        '<script>'
-        '  try {'
-        '    initKakaoMap();'
-        '  } catch (err) {'
-        '    if (window.console && window.console.error) { console.error(err); }'
-        '    handleKakaoMapLoadError();'
-        '  }'
-        '</script>'
+        f'<script>{sdk_script}</script>'
+        '<script>try { initKakaoMap(); } catch (err) { if (window.console && window.console.error) { console.error(err); } handleKakaoMapLoadError(); }</script>'
+        if sdk_script
+        else (
+            f'<script src="{sdk_url}" onerror="handleKakaoMapLoadError()"></script>'
+            '<script>window.addEventListener("load", function(){ initKakaoMap(); });</script>'
+        )
     )
 
     if course_places:
