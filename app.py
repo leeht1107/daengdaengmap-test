@@ -215,7 +215,9 @@ def load_kakao_sdk_script(key: str) -> str:
             timeout=8,
         )
         resp.raise_for_status()
-        return resp.text.replace("</script", "<\\/script")
+        sdk_script = resp.text.replace("http://t1.daumcdn.net", "https://t1.daumcdn.net")
+        sdk_script = sdk_script.replace('s+"//t1.daumcdn.net', '"https://t1.daumcdn.net')
+        return sdk_script.replace("</script", "<\\/script")
     except Exception:
         return ""
 
