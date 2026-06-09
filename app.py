@@ -732,16 +732,16 @@ with st.sidebar:
     all_gus   = sorted(_gu_base["gu_name"].dropna().unique().tolist())
     sel_gus   = st.multiselect("자치구",   all_gus,   key="sel_gus")
 
-    if st.button("🔄 필터 초기화", use_container_width=True, type="secondary"):
-        st.session_state["sel_cats"] = []
-        st.session_state["sel_provs"] = []
-        st.session_state["sel_gus"] = []
+    def _reset_filters():
+        st.session_state.pop("sel_cats", None)
+        st.session_state.pop("sel_provs", None)
+        st.session_state.pop("sel_gus", None)
         st.session_state.course_cards      = []
         st.session_state.course_ai_text    = ""
         st.session_state.course_map_places = []
         st.session_state.course_name       = ""
         st.session_state.course_is_ai      = False
-        st.rerun()
+    st.button("🔄 필터 초기화", on_click=_reset_filters, use_container_width=True, type="secondary")
 
     st.divider()
     st.header("🌤️ 날씨")
