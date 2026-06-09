@@ -252,7 +252,7 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
   <div id="map"></div>
   <div class="legend">{legend_html}</div>
 </div>
-<script src="//dapi.kakao.com/v2/maps/sdk.js?appkey={key}&libraries=clusterer"></script>
+<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey={key}&libraries=clusterer"></script>
 <script>
 var map=new kakao.maps.Map(document.getElementById('map'),{{center:new kakao.maps.LatLng(35.9,127.8),level:13}});
 var iw=new kakao.maps.InfoWindow({{zIndex:1}});
