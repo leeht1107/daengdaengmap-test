@@ -733,9 +733,9 @@ with st.sidebar:
     sel_gus   = st.multiselect("자치구",   all_gus,   key="sel_gus")
 
     def _reset_filters():
-        st.session_state.pop("sel_cats", None)
-        st.session_state.pop("sel_provs", None)
-        st.session_state.pop("sel_gus", None)
+        st.session_state["sel_cats"] = []
+        st.session_state["sel_provs"] = []
+        st.session_state["sel_gus"] = []
         st.session_state.course_cards      = []
         st.session_state.course_ai_text    = ""
         st.session_state.course_map_places = []
