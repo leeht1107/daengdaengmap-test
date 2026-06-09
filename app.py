@@ -211,20 +211,22 @@ KAKAO_SDK_FALLBACK_PATH = BASE_DIR / "assets" / "kakao_maps_sdk.js"
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_kakao_sdk_script(key: str) -> str:
     sdk_script = ""
-    try:
-        resp = requests.get(
-            "https://dapi.kakao.com/v2/maps/sdk.js",
-            params={"appkey": key, "autoload": "false"},
-            timeout=8,
-        )
-        resp.raise_for_status()
-        sdk_script = resp.text
-    except Exception:
-        sdk_script = ""
+    # Prefer bundled fallback first: Cloud runtime has frequent external SDK load restrictions.
+    if KAKAO_SDK_FALLBACK_PATH.exists():
+        try:
+            sdk_script = KAKAO_SDK_FALLBACK_PATH.read_text(encoding="utf-8")
+        except Exception:
+            sdk_script = ""
 
     if not sdk_script:
         try:
-            sdk_script = KAKAO_SDK_FALLBACK_PATH.read_text(encoding="utf-8")
+            resp = requests.get(
+                "https://dapi.kakao.com/v2/maps/sdk.js",
+                params={"appkey": key, "autoload": "false"},
+                timeout=8,
+            )
+            resp.raise_for_status()
+            sdk_script = resp.text
         except Exception:
             sdk_script = ""
 
