@@ -235,13 +235,15 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
         '<script>'
         '  window.handleKakaoMapLoadError = window.handleKakaoMapLoadError || function(){};'
         '</script>'
-        f'<script>{sdk_script}</script>'
-        '<script>try { initKakaoMap(); } catch (err) { if (window.console && window.console.error) { console.error(err); } handleKakaoMapLoadError(); }</script>'
-        if sdk_script
-        else (
-            f'<script src="{sdk_url}" onerror="handleKakaoMapLoadError()"></script>'
-            '<script>window.addEventListener("load", function(){ initKakaoMap(); });</script>'
-        )
+        f'<script src="{sdk_url}" ></script>'
+        '<script>'
+        '  try {'
+        '    initKakaoMap();'
+        '  } catch (err) {'
+        '    if (window.console && window.console.error) { console.error(err); }'
+        '    handleKakaoMapLoadError();'
+        '  }'
+        '</script>'
     )
 
     if course_places:
@@ -257,10 +259,10 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
         )
     else:
         legend_items = [
-            ("시도별 그룹 마커", "linear-gradient(135deg,#FFD6E7,#E9D5FF)", "12px"),
-            ("500곳 미만", "#FFD6E7", "10px"),
-            ("500-1,500곳", "#E9D5FF", "12px"),
-            ("1,500곳 이상", "#C084D4", "14px"),
+            ("시도별 그룹 마커", "linear-gradient(135deg,#F8C4D8,#DAC4FF)", "12px"),
+            ("500곳 미만", "#FFD2E3", "10px"),
+            ("500-1,500곳", "#CCBEFA", "12px"),
+            ("1,500곳 이상", "#A08CFF", "14px"),
         ]
         legend_html = "".join(
             f'<span style="display:inline-flex;align-items:center;margin:2px 10px 2px 0;font-size:11px;color:#7B4F8A;font-weight:700">'
@@ -275,11 +277,11 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
 <style>
   body{{margin:0;padding:0;font-family:'Malgun Gothic',sans-serif;background:transparent}}
   #map{{width:100%;height:520px}}
-  .legend{{
+    .legend{{
     position:absolute;bottom:24px;left:10px;
-    background:rgba(255,255,255,0.95);
+    background:rgba(255,255,255,0.98);
     padding:8px 12px;border-radius:12px;z-index:5;
-    box-shadow:0 2px 12px rgba(180,100,140,0.18);
+    box-shadow:0 2px 14px rgba(130,80,140,0.22);
     display:flex;flex-wrap:wrap;max-width:calc(100% - 24px)
   }}
   .iw{{padding:12px;min-width:190px;max-width:240px;font-family:'Malgun Gothic',sans-serif}}
@@ -313,11 +315,11 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
   }}
   .prov-bubble{{
     min-width:44px;height:44px;padding:0 10px;border-radius:999px;
-    background:linear-gradient(135deg,#FFD6E7 0%,#E9D5FF 100%);
-    color:#7B4F8A;font-size:15px;font-weight:900;
+    background:var(--prov-bg, linear-gradient(135deg,#F8C4D8 0%,#DAC4FF 100%));
+    color:var(--prov-text,#6D4E88);font-size:15px;font-weight:900;
     display:flex;align-items:center;justify-content:center;
     border:3px solid rgba(255,255,255,0.96);
-    box-shadow:0 8px 22px rgba(192,132,212,0.28),0 2px 8px rgba(255,143,171,0.2)
+    box-shadow:0 8px 22px rgba(120,80,180,0.22),0 2px 8px rgba(255,143,171,0.2)
   }}
   .prov-label{{
     margin-top:5px;padding:3px 8px;border-radius:999px;
@@ -462,6 +464,15 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
           }}
           return String(count);
         }}
+        function provinceBubbleStyle(count){{
+          if(count >= 1500){{
+            return {{bg:'#A08CFF', text:'#4A3D8F'}};
+          }}
+          if(count >= 500){{
+            return {{bg:'#CCBEFA', text:'#5F528F'}};
+          }}
+          return {{bg:'#FFD2E3', text:'#8F4B69'}};
+        }}
         var cp={course_js};
         var nums=['①','②','③','④','⑤','⑥','⑦','⑧'];
         var cpPalette=[
@@ -508,17 +519,23 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
     groups[prov].lng+=lng;
   }});
   var provinceBounds=new kakao.maps.LatLngBounds();
-  Object.keys(groups).forEach(function(name){{
-    var g=groups[name];
-    var pos=new kakao.maps.LatLng(g.lat/g.count,g.lng/g.count);
-    var el=document.createElement('div');
-    el.className='prov-wrap';
-    el.innerHTML='<div class="prov-bubble">'+formatCount(g.count)+'</div><div class="prov-label">'+name+'</div>';
-    el.addEventListener('click',(function(prov){{return function(){{
-      hideProvinceOverlays();
-      iw.close();
-      showListMarkers(prov,true);
-      map.setLevel(Math.min(map.getLevel(),9));
+          Object.keys(groups).forEach(function(name){{
+            var g=groups[name];
+            var pos=new kakao.maps.LatLng(g.lat/g.count,g.lng/g.count);
+            var el=document.createElement('div');
+            el.className='prov-wrap';
+            var ps=provinceBubbleStyle(g.count);
+            el.innerHTML='<div class="prov-bubble">'+formatCount(g.count)+'</div><div class="prov-label">'+name+'</div>';
+            var elBubble=el.firstElementChild;
+            if(elBubble){{
+              elBubble.style.setProperty('--prov-bg', ps.bg);
+              elBubble.style.setProperty('--prov-text', ps.text);
+            }}
+            el.addEventListener('click',(function(prov){{return function(){{
+              hideProvinceOverlays();
+              iw.close();
+              showListMarkers(prov,true);
+              map.setLevel(Math.min(map.getLevel(),9));
     }};}})(name));
     var overlay=new kakao.maps.CustomOverlay({{position:pos,content:el,yAnchor:0.85,zIndex:7}});
     provinceOverlays.push(overlay);
