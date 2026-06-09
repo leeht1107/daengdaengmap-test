@@ -206,8 +206,11 @@ def load_data() -> pd.DataFrame:
     return df
 
 # ── 카카오맵 HTML (클러스터링 + 범례 + 코스 마커 + 운영시간/홈페이지) ──
+KAKAO_SDK_FALLBACK_PATH = BASE_DIR / "assets" / "kakao_maps_sdk.js"
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_kakao_sdk_script(key: str) -> str:
+    sdk_script = ""
     try:
         resp = requests.get(
             "https://dapi.kakao.com/v2/maps/sdk.js",
@@ -215,11 +218,23 @@ def load_kakao_sdk_script(key: str) -> str:
             timeout=8,
         )
         resp.raise_for_status()
-        sdk_script = resp.text.replace("http://t1.daumcdn.net", "https://t1.daumcdn.net")
-        sdk_script = sdk_script.replace('s+"//t1.daumcdn.net', '"https://t1.daumcdn.net')
-        return sdk_script.replace("</script", "<\\/script")
+        sdk_script = resp.text
     except Exception:
-        return ""
+        sdk_script = ""
+
+    if not sdk_script:
+        try:
+            sdk_script = KAKAO_SDK_FALLBACK_PATH.read_text(encoding="utf-8")
+        except Exception:
+            sdk_script = ""
+
+    if sdk_script:
+        sdk_script = sdk_script.replace("http://t1.daumcdn.net", "https://t1.daumcdn.net")
+        sdk_script = sdk_script.replace('s+"//t1.daumcdn.net', '"https://t1.daumcdn.net')
+        sdk_script = sdk_script.replace('s+"//mts.daumcdn.net', '"https://mts.daumcdn.net')
+        sdk_script = sdk_script.replace('u="http://mts.daumcdn.net', 'u="https://mts.daumcdn.net')
+        return sdk_script.replace("</script", "<\\/script")
+    return ""
 
 def build_map_html(places: list[dict], key: str, course_places: list[dict] = None) -> str:
     places_js = json.dumps(places,          ensure_ascii=False)
@@ -230,19 +245,35 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
         'https://dapi.kakao.com/v2/maps/sdk.js?'
         f'appkey={urllib.parse.quote(key)}&autoload=false'
     )
+    sdk_script = load_kakao_sdk_script(key)
     sdk_loader = (
         '<script>'
         '  window.handleKakaoMapLoadError = window.handleKakaoMapLoadError || function(){};'
-        '</script>'
-        f'<script src="{sdk_url}" ></script>'
-        '<script>'
-        '  try {'
-        '    initKakaoMap();'
-        '  } catch (err) {'
-        '    if (window.console && window.console.error) { console.error(err); }'
-        '    handleKakaoMapLoadError();'
-        '  }'
-        '</script>'
+        '  window.__kakaoMapInitAttempts = 0;'
+        '  window.__kakaoMapInitialized = false;'
+        '  window.__kakaoMapInit = function() {'
+        '    if (window.__kakaoMapInitialized) { return; }'
+        '    if (window.kakao && window.kakao.maps && window.kakao.maps.version) {'
+        '      window.__kakaoMapInitialized = true;'
+        '      try { initKakaoMap(); } catch (err) { '
+        '        if (window.console && window.console.error) { console.error(err); } '
+        '        handleKakaoMapLoadError(); '
+        '      }'
+        '      return;'
+        '    }'
+        '    window.__kakaoMapInitAttempts += 1;'
+        '    if (window.__kakaoMapInitAttempts > 150) {'
+        '      handleKakaoMapLoadError();'
+        '      return;'
+        '    }'
+        '    setTimeout(window.__kakaoMapInit, 80);'
+        '  };'
+        '</script>' +
+        (f'<script>{sdk_script}</script><script>__kakaoMapInit();</script>')
+        if sdk_script
+        else (
+            f'<script src="{sdk_url}" onload="__kakaoMapInit()" onerror="handleKakaoMapLoadError()"></script>'
+        )
     )
 
     if course_places:
