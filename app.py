@@ -206,8 +206,11 @@ def load_data() -> pd.DataFrame:
     return df
 
 # ── 카카오맵 HTML (클러스터링 + 범례 + 코스 마커 + 운영시간/홈페이지) ──
+KAKAO_SDK_FALLBACK_PATH = BASE_DIR / "assets" / "kakao_maps_sdk.js"
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_kakao_sdk_script(key: str) -> str:
+    sdk_script = ""
     try:
         resp = requests.get(
             "https://dapi.kakao.com/v2/maps/sdk.js",
@@ -215,11 +218,23 @@ def load_kakao_sdk_script(key: str) -> str:
             timeout=8,
         )
         resp.raise_for_status()
-        sdk_script = resp.text.replace("http://t1.daumcdn.net", "https://t1.daumcdn.net")
-        sdk_script = sdk_script.replace('s+"//t1.daumcdn.net', '"https://t1.daumcdn.net')
-        return sdk_script.replace("</script", "<\\/script")
+        sdk_script = resp.text
     except Exception:
-        return ""
+        sdk_script = ""
+
+    if not sdk_script:
+        try:
+            sdk_script = KAKAO_SDK_FALLBACK_PATH.read_text(encoding="utf-8")
+        except Exception:
+            sdk_script = ""
+
+    if sdk_script:
+        sdk_script = sdk_script.replace("http://t1.daumcdn.net", "https://t1.daumcdn.net")
+        sdk_script = sdk_script.replace('s+"//t1.daumcdn.net', '"https://t1.daumcdn.net')
+        sdk_script = sdk_script.replace('s+"//mts.daumcdn.net', '"https://mts.daumcdn.net')
+        sdk_script = sdk_script.replace('u="http://mts.daumcdn.net', 'u="https://mts.daumcdn.net')
+        return sdk_script.replace("</script", "<\\/script")
+    return ""
 
 def build_map_html(places: list[dict], key: str, course_places: list[dict] = None) -> str:
     places_js = json.dumps(places,          ensure_ascii=False)
@@ -234,16 +249,32 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
     sdk_loader = (
         '<script>'
         '  window.handleKakaoMapLoadError = window.handleKakaoMapLoadError || function(){};'
-        '</script>'
-        f'<script src="{sdk_url}" ></script>'
-        '<script>'
-        '  try {'
-        '    initKakaoMap();'
-        '  } catch (err) {'
-        '    if (window.console && window.console.error) { console.error(err); }'
-        '    handleKakaoMapLoadError();'
-        '  }'
-        '</script>'
+        '  window.__kakaoMapInitAttempts = 0;'
+        '  window.__kakaoMapInitialized = false;'
+        '  window.__kakaoMapInit = function() {'
+        '    if (window.__kakaoMapInitialized) { return; }'
+        '    if (window.kakao && window.kakao.maps && window.kakao.maps.version) {'
+        '      window.__kakaoMapInitialized = true;'
+        '      try { initKakaoMap(); } catch (err) { '
+        '        if (window.console && window.console.error) { console.error(err); } '
+        '        handleKakaoMapLoadError(); '
+        '      }'
+        '      return;'
+        '    }'
+        '    window.__kakaoMapInitAttempts += 1;'
+        '    if (window.__kakaoMapInitAttempts > 150) {'
+        '      handleKakaoMapLoadError();'
+        '      return;'
+        '    }'
+        '    setTimeout(window.__kakaoMapInit, 80);'
+        '  };'
+        '</script>' +
+        (f'<script>{sdk_script}</script>'
+         '<script>__kakaoMapInit();</script>')
+        if sdk_script
+        else (
+            f'<script src="{sdk_url}" onload="__kakaoMapInit()" onerror="handleKakaoMapLoadError()"></script>'
+        )
     )
 
     if course_places:
@@ -311,21 +342,20 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
   }}
   .prov-wrap{{
     position:relative;display:flex;flex-direction:column;align-items:center;
-    transform:translateY(-8px);cursor:pointer;user-select:none
+    transform:translate(var(--prov-dx,0px),calc(-8px + var(--prov-dy,0px)));cursor:pointer;user-select:none
   }}
   .prov-bubble{{
-    min-width:44px;height:44px;padding:0 10px;border-radius:999px;
+    min-width:52px;min-height:52px;padding:8px 12px 7px;border-radius:999px;
     background:var(--prov-bg, linear-gradient(135deg,#F8C4D8 0%,#DAC4FF 100%));
-    color:var(--prov-text,#6D4E88);font-size:15px;font-weight:900;
-    display:flex;align-items:center;justify-content:center;
+    color:var(--prov-text,#6D4E88);display:flex;flex-direction:column;
+    align-items:center;justify-content:center;gap:3px;line-height:1;
     border:3px solid rgba(255,255,255,0.96);
     box-shadow:0 8px 22px rgba(120,80,180,0.22),0 2px 8px rgba(255,143,171,0.2)
   }}
-  .prov-label{{
-    margin-top:5px;padding:3px 8px;border-radius:999px;
-    background:rgba(255,255,255,0.92);color:#8B5CF6;
+  .prov-count{{font-size:18px;font-weight:900;letter-spacing:0}}
+  .prov-name{{
     font-size:11px;font-weight:800;white-space:nowrap;
-    box-shadow:0 2px 8px rgba(180,100,140,0.16)
+    color:color-mix(in srgb, var(--prov-text,#6D4E88) 92%, white 8%)
   }}
   .list-group{{
     min-width:24px;height:24px;padding:0 6px;border-radius:999px;
@@ -454,8 +484,82 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
           if(fitToBounds&&shown>0){{map.setBounds(bounds,60);}}
         }}
         var provinceOverlays=[];
+        var provinceOverlayItems=[];
         function hideProvinceOverlays(){{
           provinceOverlays.forEach(function(o){{o.setMap(null);}});
+        }}
+        function setProvinceOverlayOffset(item){{
+          item.el.style.setProperty('--prov-dx', Math.round(item.dx) + 'px');
+          item.el.style.setProperty('--prov-dy', Math.round(item.dy) + 'px');
+        }}
+        function baseProvinceOffset(name){{
+          var offsets={{
+            '서울': {{dx:18, dy:-34}},
+            '경기': {{dx:-34, dy:8}},
+            '인천': {{dx:-54, dy:-6}},
+            '강원': {{dx:18, dy:-24}},
+            '충북': {{dx:34, dy:-8}},
+            '충남': {{dx:-44, dy:4}},
+            '세종': {{dx:6, dy:24}},
+            '대전': {{dx:-18, dy:24}},
+            '전북': {{dx:-38, dy:14}},
+            '광주': {{dx:-34, dy:30}},
+            '전남': {{dx:-8, dy:26}},
+            '경북': {{dx:36, dy:-4}},
+            '대구': {{dx:2, dy:28}},
+            '울산': {{dx:44, dy:12}},
+            '경남': {{dx:6, dy:18}},
+            '부산': {{dx:32, dy:34}},
+            '제주': {{dx:0, dy:10}},
+          }};
+          return offsets[name] || {{dx:0, dy:0}};
+        }}
+        function scheduleProvinceOverlayLayout(){{
+          if(!provinceOverlayItems.length) return;
+          requestAnimationFrame(function(){{
+            requestAnimationFrame(applyProvinceOverlayLayout);
+          }});
+        }}
+        function applyProvinceOverlayLayout(){{
+          if(!provinceOverlayItems.length) return;
+          provinceOverlayItems.forEach(function(item){{
+            item.dx=item.baseDx||0;
+            item.dy=item.baseDy||0;
+            setProvinceOverlayOffset(item);
+          }});
+          for(var iter=0;iter<14;iter++){{
+            var moved=false;
+            for(var i=0;i<provinceOverlayItems.length;i++){{
+              for(var j=i+1;j<provinceOverlayItems.length;j++){{
+                var a=provinceOverlayItems[i];
+                var b=provinceOverlayItems[j];
+                var ra=a.el.getBoundingClientRect();
+                var rb=b.el.getBoundingClientRect();
+                var overlapX=Math.min(ra.right,rb.right)-Math.max(ra.left,rb.left);
+                var overlapY=Math.min(ra.bottom,rb.bottom)-Math.max(ra.top,rb.top);
+                if(overlapX < 10 || overlapY < 8) continue;
+                var ax=(ra.left+ra.right)/2;
+                var ay=(ra.top+ra.bottom)/2;
+                var bx=(rb.left+rb.right)/2;
+                var by=(rb.top+rb.bottom)/2;
+                var dx=ax-bx;
+                var dy=ay-by;
+                if(Math.abs(dx) < 1) dx=(i%2===0?1:-1);
+                if(Math.abs(dy) < 1) dy=(j%2===0?1:-1);
+                var distance=Math.sqrt(dx*dx+dy*dy)||1;
+                var pushX=(overlapX+14)*0.2*(dx/distance);
+                var pushY=(overlapY+12)*0.16*(dy/distance);
+                a.dx=Math.max(-76,Math.min(76,a.dx+pushX));
+                b.dx=Math.max(-76,Math.min(76,b.dx-pushX));
+                a.dy=Math.max(-40,Math.min(40,a.dy+pushY));
+                b.dy=Math.max(-40,Math.min(40,b.dy-pushY));
+                setProvinceOverlayOffset(a);
+                setProvinceOverlayOffset(b);
+                moved=true;
+              }}
+            }}
+            if(!moved) break;
+          }}
         }}
         function formatCount(count){{
           if(count>=1000){{
@@ -519,13 +623,14 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
     groups[prov].lng+=lng;
   }});
   var provinceBounds=new kakao.maps.LatLngBounds();
+  provinceOverlayItems=[];
           Object.keys(groups).forEach(function(name){{
             var g=groups[name];
             var pos=new kakao.maps.LatLng(g.lat/g.count,g.lng/g.count);
             var el=document.createElement('div');
             el.className='prov-wrap';
             var ps=provinceBubbleStyle(g.count);
-            el.innerHTML='<div class="prov-bubble">'+formatCount(g.count)+'</div><div class="prov-label">'+name+'</div>';
+            el.innerHTML='<div class="prov-bubble"><div class="prov-count">'+formatCount(g.count)+'</div><div class="prov-name">'+name+'</div></div>';
             var elBubble=el.firstElementChild;
             if(elBubble){{
               elBubble.style.setProperty('--prov-bg', ps.bg);
@@ -538,11 +643,19 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
               map.setLevel(Math.min(map.getLevel(),9));
     }};}})(name));
     var overlay=new kakao.maps.CustomOverlay({{position:pos,content:el,yAnchor:0.85,zIndex:7}});
+    var baseOffset=baseProvinceOffset(name);
     provinceOverlays.push(overlay);
+    provinceOverlayItems.push({{
+      overlay:overlay,el:el,dx:baseOffset.dx,dy:baseOffset.dy,baseDx:baseOffset.dx,baseDy:baseOffset.dy
+    }});
     overlay.setMap(map);
     provinceBounds.extend(pos);
   }});
-  if(provinceOverlays.length>0){{map.setBounds(provinceBounds,80);}}
+  if(provinceOverlays.length>0){{
+    map.setBounds(provinceBounds,80);
+    kakao.maps.event.addListener(map,'idle',scheduleProvinceOverlayLayout);
+    scheduleProvinceOverlayLayout();
+  }}
 }}
       }});
     }}catch(e){{
