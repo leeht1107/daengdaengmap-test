@@ -211,20 +211,22 @@ KAKAO_SDK_FALLBACK_PATH = BASE_DIR / "assets" / "kakao_maps_sdk.js"
 @st.cache_data(ttl=3600, show_spinner=False)
 def load_kakao_sdk_script(key: str) -> str:
     sdk_script = ""
-    try:
-        resp = requests.get(
-            "https://dapi.kakao.com/v2/maps/sdk.js",
-            params={"appkey": key, "autoload": "false"},
-            timeout=8,
-        )
-        resp.raise_for_status()
-        sdk_script = resp.text
-    except Exception:
-        sdk_script = ""
+    # Prefer bundled fallback first: Cloud runtime has frequent external SDK load restrictions.
+    if KAKAO_SDK_FALLBACK_PATH.exists():
+        try:
+            sdk_script = KAKAO_SDK_FALLBACK_PATH.read_text(encoding="utf-8")
+        except Exception:
+            sdk_script = ""
 
     if not sdk_script:
         try:
-            sdk_script = KAKAO_SDK_FALLBACK_PATH.read_text(encoding="utf-8")
+            resp = requests.get(
+                "https://dapi.kakao.com/v2/maps/sdk.js",
+                params={"appkey": key, "autoload": "false"},
+                timeout=8,
+            )
+            resp.raise_for_status()
+            sdk_script = resp.text
         except Exception:
             sdk_script = ""
 
@@ -241,6 +243,11 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
     course_js = json.dumps(course_places or [], ensure_ascii=False)
     cat_js    = json.dumps(CAT_COLORS,      ensure_ascii=False)
     size_js   = json.dumps(SIZE_COLORS,     ensure_ascii=False)
+    course_order_js = json.dumps(COURSE_ORDER, ensure_ascii=False)
+    sdk_url = (
+        'https://dapi.kakao.com/v2/maps/sdk.js?'
+        f'appkey={urllib.parse.quote(key)}&autoload=false'
+    )
     sdk_script = load_kakao_sdk_script(key)
     sdk_url = (
         'https://dapi.kakao.com/v2/maps/sdk.js?'
@@ -269,8 +276,7 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
         '    setTimeout(window.__kakaoMapInit, 80);'
         '  };'
         '</script>' +
-        (f'<script>{sdk_script}</script>'
-         '<script>__kakaoMapInit();</script>')
+        (f'<script>{sdk_script}</script><script>__kakaoMapInit();</script>')
         if sdk_script
         else (
             f'<script src="{sdk_url}" onload="__kakaoMapInit()" onerror="handleKakaoMapLoadError()"></script>'
@@ -370,6 +376,22 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
     box-shadow:0 2px 8px rgba(76,134,232,0.15)
   }}
   .mw{{position:relative;width:100%;height:520px}}
+  .map-toolbar{{
+    position:absolute;top:14px;left:12px;z-index:8;display:none;
+    align-items:center;gap:8px;flex-wrap:wrap;max-width:calc(100% - 24px)
+  }}
+  .map-toolbar.is-visible{{display:flex}}
+  .map-chip{{
+    background:rgba(255,255,255,0.96);border:1px solid #E9D5FF;border-radius:999px;
+    box-shadow:0 4px 14px rgba(139,92,246,0.14);padding:7px 12px;
+    font-size:12px;font-weight:800;color:#7B4F8A
+  }}
+  .map-btn{{
+    border:none;border-radius:999px;padding:7px 12px;cursor:pointer;
+    font-size:12px;font-weight:800;background:rgba(255,255,255,0.96);color:#7B4F8A;
+    box-shadow:0 4px 14px rgba(139,92,246,0.14);border:1px solid #E9D5FF
+  }}
+  .map-btn.is-active{{background:#F3E8FF;color:#6D28D9;border-color:#C4B5FD}}
   .map-error{{
     position:absolute;inset:0;display:none;align-items:center;justify-content:center;
     text-align:center;color:#7B4F8A;background:#FFF7FB;border:2px dashed #FFD6E7;
@@ -380,6 +402,12 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
 <div class="mw">
   <div id="map"></div>
   <div id="map-error" class="map-error"></div>
+  <div id="map-toolbar" class="map-toolbar">
+    <span id="map-toolbar-label" class="map-chip"></span>
+    <button id="map-toolbar-picks" class="map-btn" type="button">추천 보기</button>
+    <button id="map-toolbar-list" class="map-btn" type="button">전체 장소</button>
+    <button id="map-toolbar-reset" class="map-btn" type="button">전국 보기</button>
+  </div>
   <div class="legend">{legend_html}</div>
 </div>
 <script>
@@ -407,9 +435,18 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
         var iw=new kakao.maps.InfoWindow({{zIndex:1}});
         var C={cat_js};
         var S={size_js};
+        var courseOrder={course_order_js};
         var places={places_js};
         var markers=[];
         var markerItems=[];
+        var focusOverlays=[];
+        var currentProvince=null;
+        var currentProvinceMode='picks';
+        var mapToolbar=document.getElementById('map-toolbar');
+        var mapToolbarLabel=document.getElementById('map-toolbar-label');
+        var mapToolbarPicks=document.getElementById('map-toolbar-picks');
+        var mapToolbarList=document.getElementById('map-toolbar-list');
+        var mapToolbarReset=document.getElementById('map-toolbar-reset');
         var smallBlueMarkerSvg='<svg xmlns="http://www.w3.org/2000/svg" width="18" height="24" viewBox="0 0 18 24"><path d="M9 23s7-7.1 7-14A7 7 0 1 0 2 9c0 6.9 7 14 7 14z" fill="#4C86E8" stroke="white" stroke-width="2"/><circle cx="9" cy="9" r="3" fill="white" opacity=".95"/></svg>';
         var smallBlueMarkerImage=new kakao.maps.MarkerImage(
           'data:image/svg+xml;charset=UTF-8,'+encodeURIComponent(smallBlueMarkerSvg),
@@ -444,6 +481,38 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
         function clearListOverlays(){{
           listOverlays.forEach(function(o){{o.setMap(null);}});
           listOverlays=[];
+        }}
+        function clearFocusOverlays(){{
+          focusOverlays.forEach(function(o){{o.setMap(null);}});
+          focusOverlays=[];
+        }}
+        function setToolbarVisible(visible){{
+          if(!mapToolbar) return;
+          mapToolbar.className=visible ? 'map-toolbar is-visible' : 'map-toolbar';
+        }}
+        function updateToolbar(){{
+          if(!currentProvince){{
+            setToolbarVisible(false);
+            return;
+          }}
+          setToolbarVisible(true);
+          if(mapToolbarLabel) mapToolbarLabel.textContent=currentProvince+' 탐색';
+          if(mapToolbarPicks) mapToolbarPicks.className='map-btn'+(currentProvinceMode==='picks'?' is-active':'');
+          if(mapToolbarList) mapToolbarList.className='map-btn'+(currentProvinceMode==='list'?' is-active':'');
+        }}
+        function resetProvinceFocus(){{
+          currentProvince=null;
+          currentProvinceMode='picks';
+          clearFocusOverlays();
+          clearListOverlays();
+          markerItems.forEach(function(item){{item.marker.setMap(null);}});
+          hideProvinceOverlays();
+          provinceOverlays.forEach(function(o){{o.setMap(map);}});
+          updateToolbar();
+          if(provinceOverlays.length>0){{
+            map.setBounds(provinceBounds,80);
+            scheduleProvinceOverlayLayout();
+          }}
         }}
         function showListMarkers(selectedProvince, fitToBounds){{
           var bounds=new kakao.maps.LatLngBounds();
@@ -483,7 +552,80 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
           }}
           if(fitToBounds&&shown>0){{map.setBounds(bounds,60);}}
         }}
+        function buildProvincePicks(province){{
+          var rank={{}};
+          courseOrder.forEach(function(name, index){{ rank[name]=index; }});
+          var pool=places.filter(function(p){{ return (p.province||'정보없음')===province && p.mapy && p.mapx; }});
+          pool.sort(function(a,b){{
+            var rankA=(rank[a.content_type_name]!==undefined)?rank[a.content_type_name]:courseOrder.length;
+            var rankB=(rank[b.content_type_name]!==undefined)?rank[b.content_type_name]:courseOrder.length;
+            if(rankA!==rankB) return rankA-rankB;
+            return String(a.title||'').localeCompare(String(b.title||''), 'ko');
+          }});
+          var picks=[];
+          var seenCats={{}};
+          pool.forEach(function(p){{
+            if(picks.length>=4) return;
+            var cat=p.content_type_name||'기타';
+            if(seenCats[cat]) return;
+            picks.push(p);
+            seenCats[cat]=true;
+          }});
+          if(picks.length<4){{
+            pool.forEach(function(p){{
+              if(picks.length>=4) return;
+              if(picks.some(function(existing){{ return existing.title===p.title; }})) return;
+              picks.push(p);
+            }});
+          }}
+          return picks;
+        }}
+        function showProvincePicks(province){{
+          var picks=buildProvincePicks(province);
+          var bounds=new kakao.maps.LatLngBounds();
+          clearFocusOverlays();
+          clearListOverlays();
+          markerItems.forEach(function(item){{item.marker.setMap(null);}});
+          var nums=['①','②','③','④'];
+          picks.forEach(function(p, i){{
+            var pos=new kakao.maps.LatLng(p.mapy,p.mapx);
+            bounds.extend(pos);
+            var el=document.createElement('div');
+            el.className='cp-wrap';
+            var color=cpPalette[i%cpPalette.length];
+            el.style.setProperty('--cp-light',color.light);
+            el.style.setProperty('--cp-main',color.main);
+            el.style.setProperty('--cp-deep',color.deep);
+            el.style.setProperty('--cp-text',color.text);
+            el.innerHTML='<div class="cp">'+nums[i]+'</div><div class="cp-label">'+(p.title||'추천 장소')+'</div>';
+            var overlay=new kakao.maps.CustomOverlay({{position:pos,content:el,yAnchor:1.15,zIndex:10}});
+            focusOverlays.push(overlay);
+            overlay.setMap(map);
+          }});
+          if(picks.length>1){{
+            map.setBounds(bounds,80);
+          }}else if(picks.length===1){{
+            map.setCenter(bounds.getSouthWest());
+            map.setLevel(7);
+          }}else{{
+            showListMarkers(province,true);
+          }}
+        }}
+        function activateProvince(province, mode){{
+          currentProvince=province;
+          currentProvinceMode=mode||'picks';
+          hideProvinceOverlays();
+          iw.close();
+          if(currentProvinceMode==='list'){{
+            clearFocusOverlays();
+            showListMarkers(province,true);
+          }}else{{
+            showProvincePicks(province);
+          }}
+          updateToolbar();
+        }}
         var provinceOverlays=[];
+        var provinceBounds=new kakao.maps.LatLngBounds();
         var provinceOverlayItems=[];
         function hideProvinceOverlays(){{
           provinceOverlays.forEach(function(o){{o.setMap(null);}});
@@ -622,7 +764,6 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
     groups[prov].lat+=lat;
     groups[prov].lng+=lng;
   }});
-  var provinceBounds=new kakao.maps.LatLngBounds();
   provinceOverlayItems=[];
           Object.keys(groups).forEach(function(name){{
             var g=groups[name];
@@ -637,10 +778,7 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
               elBubble.style.setProperty('--prov-text', ps.text);
             }}
             el.addEventListener('click',(function(prov){{return function(){{
-              hideProvinceOverlays();
-              iw.close();
-              showListMarkers(prov,true);
-              map.setLevel(Math.min(map.getLevel(),9));
+              activateProvince(prov,'picks');
     }};}})(name));
     var overlay=new kakao.maps.CustomOverlay({{position:pos,content:el,yAnchor:0.85,zIndex:7}});
     var baseOffset=baseProvinceOffset(name);
@@ -657,6 +795,21 @@ def build_map_html(places: list[dict], key: str, course_places: list[dict] = Non
     scheduleProvinceOverlayLayout();
   }}
 }}
+        if(mapToolbarPicks){{
+          mapToolbarPicks.addEventListener('click', function(){{
+            if(currentProvince) activateProvince(currentProvince,'picks');
+          }});
+        }}
+        if(mapToolbarList){{
+          mapToolbarList.addEventListener('click', function(){{
+            if(currentProvince) activateProvince(currentProvince,'list');
+          }});
+        }}
+        if(mapToolbarReset){{
+          mapToolbarReset.addEventListener('click', function(){{
+            resetProvinceFocus();
+          }});
+        }}
       }});
     }}catch(e){{
       showMapError('카카오 지도를 초기화하지 못했습니다.<br>'+String(e.message||e));
